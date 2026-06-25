@@ -244,7 +244,10 @@ jobs:
 
       # ── Step D: Post sticky PR comment (skip on forks — token is read-only) ─
       - name: Post Trivy findings comment
-        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+        # Comment only on same-repo PRs (the default token can't write to a base repo from a
+        # cross-fork PR). NOTE: head.repo.fork is true whenever the repo itself is a fork of an
+        # upstream, so compare head/base repo names instead of using !head.repo.fork.
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
         uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: trivy
