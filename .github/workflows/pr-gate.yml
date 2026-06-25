@@ -38,6 +38,8 @@ on:
         required: false
       OSSRH_SECRET:
         required: false
+      CODECOV_TOKEN:
+        required: false
 
 jobs:
 # ─────────────────────────────────────────────
@@ -362,6 +364,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: '**/target/site/jacoco/jacoco.xml'
           flags: java
           fail_ci_if_error: true
@@ -393,6 +396,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ${{ inputs.GO_SERVICE_LOCATION }}/coverage.out
           flags: go
           fail_ci_if_error: true
@@ -430,6 +434,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ${{ inputs.NPM_SERVICE_LOCATION }}/coverage/lcov.info
           flags: npm
           fail_ci_if_error: true
@@ -459,6 +464,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: '**/build/reports/jacoco/**/*.xml'
           flags: android
           fail_ci_if_error: true
