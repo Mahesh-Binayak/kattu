@@ -1,0 +1,348 @@
+name: PR Gate
+
+on:
+  workflow_call:
+    inputs:
+      # Override service root paths only if they are NOT at repo root
+      JAVA_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: '.'
+      GO_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: '.'
+      NPM_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: '.'
+      JAVA_VERSION:
+        required: false
+        type: number
+        default: 21
+      NODE_VERSION:
+        required: false
+        type: string
+        default: '20'
+      SCAN_SEVERITY:
+        required: false
+        type: string
+        default: 'HIGH,CRITICAL'
+    secrets:
+      OSSRH_USER:
+        required: false
+      OSSRH_SECRET:
+        required: false
+
+jobs:
+# ─────────────────────────────────────────────
+# DETECT — Auto-detect which stacks are present
+# Security jobs run in parallel with this.
+# Coverage jobs wait for its output.
+# ─────────────────────────────────────────────
+  detect:
+    name: Detect Stacks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_java:    ${{ steps.detect.outputs.has_java }}
+      has_go:      ${{ steps.detect.outputs.has_go }}
+      has_npm:     ${{ steps.detect.outputs.has_npm }}
+      has_android: ${{ steps.detect.outputs.has_android }}
+      has_flutter: ${{ steps.detect.outputs.has_flutter }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Detect stacks
+        id: detect
+        run: |
+          detect() { [ -n "$1" ] && echo "true" || echo "false"; }
+
+          echo "has_java=$(detect "$(find . -maxdepth 5 -name 'pom.xml' -not -path '*/node_modules/*' | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_go=$(detect "$(find . -maxdepth 5 -name 'go.mod' -not -path '*/vendor/*' | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_npm=$(detect "$(find . -maxdepth 5 -name 'package.json' -not -path '*/node_modules/*' | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_android=$(detect "$(grep -rl 'com.android' --include='*.gradle' --include='*.gradle.kts' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_flutter=$(detect "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
+
+      - name: Print detected stacks
+        run: |
+          echo "Java:    ${{ steps.detect.outputs.has_java }}"
+          echo "Go:      ${{ steps.detect.outputs.has_go }}"
+          echo "npm:     ${{ steps.detect.outputs.has_npm }}"
+          echo "Android: ${{ steps.detect.outputs.has_android }}"
+          echo "Flutter: ${{ steps.detect.outputs.has_flutter }}"
+
+# ─────────────────────────────────────────────
+# TIER 1 — Security (always run, all parallel, no stack assumptions)
+# ─────────────────────────────────────────────
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency CVE Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  lint-workflows:
+    name: Lint GitHub Actions Workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install actionlint
+        run: |
+          ACTIONLINT_VERSION="1.7.7"
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz actionlint
+          sudo mv actionlint /usr/local/bin/
+
+      - name: Run actionlint
+        run: actionlint
+
+  trivy-fs:
+    name: Trivy Filesystem Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Scan filesystem for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: ${{ inputs.SCAN_SEVERITY }}
+          exit-code: 1
+          format: sarif
+          output: trivy-fs.sarif
+
+      - name: Upload results to Security tab
+        uses: github/codeql-action/upload-sarif@4e828ff8d448a8a6e532957b1811f387a63867e8  # v3.29.4
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  trivy-config:
+    name: Trivy Dockerfile / IaC Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Scan Dockerfiles and IaC configs
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: ${{ inputs.SCAN_SEVERITY }}
+          exit-code: 0
+          format: sarif
+          output: trivy-config.sarif
+
+      - name: Upload results to Security tab
+        uses: github/codeql-action/upload-sarif@4e828ff8d448a8a6e532957b1811f387a63867e8  # v3.29.4
+        if: always()
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+# ─────────────────────────────────────────────
+# TIER 2 — Coverage (conditional on detected stack, all parallel with each other)
+# ─────────────────────────────────────────────
+  coverage-java:
+    name: Java Coverage → Codecov
+    needs: detect
+    if: ${{ needs.detect.outputs.has_java == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.JAVA_VERSION }}
+
+      - name: Cache Maven repository
+        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a  # v4.1.2
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Create Maven settings
+        run: |
+          cat > $GITHUB_WORKSPACE/settings.xml <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>ossrh</id>
+                <username>${{ secrets.OSSRH_USER }}</username>
+                <password>${{ secrets.OSSRH_SECRET }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      - name: Run tests and generate coverage
+        run: |
+          cd ${{ inputs.JAVA_SERVICE_LOCATION }}
+          mvn -U -B verify -Dgpg.skip=true -Dmaven.wagon.http.retryHandler.count=2 \
+            --file pom.xml -s $GITHUB_WORKSPACE/settings.xml
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          files: '**/target/site/jacoco/jacoco.xml'
+          flags: java
+          fail_ci_if_error: true
+
+  coverage-go:
+    name: Go Coverage → Codecov
+    needs: detect
+    if: ${{ needs.detect.outputs.has_go == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
+        with:
+          go-version-file: ${{ inputs.GO_SERVICE_LOCATION }}/go.mod
+          cache: true
+
+      - name: Run tests and generate coverage
+        run: |
+          cd ${{ inputs.GO_SERVICE_LOCATION }}
+          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          files: ${{ inputs.GO_SERVICE_LOCATION }}/coverage.out
+          flags: go
+          fail_ci_if_error: true
+
+  coverage-npm:
+    name: npm Coverage → Codecov
+    needs: detect
+    if: ${{ needs.detect.outputs.has_npm == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: ${{ inputs.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.NPM_SERVICE_LOCATION }}/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd ${{ inputs.NPM_SERVICE_LOCATION }}
+          npm ci
+
+      - name: Run tests and generate coverage
+        run: |
+          cd ${{ inputs.NPM_SERVICE_LOCATION }}
+          npm test -- --coverage --watchAll=false
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          files: ${{ inputs.NPM_SERVICE_LOCATION }}/coverage/lcov.info
+          flags: npm
+          fail_ci_if_error: true
+
+  coverage-android:
+    name: Android Coverage → Codecov
+    needs: detect
+    if: ${{ needs.detect.outputs.has_android == 'true' && needs.detect.outputs.has_java == 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.JAVA_VERSION }}
+
+      - name: Run Android unit tests with coverage
+        run: ./gradlew testDebugUnitTest jacocoTestReport
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          files: '**/build/reports/jacoco/**/*.xml'
+          flags: android
+          fail_ci_if_error: true
