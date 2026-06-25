@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: 'HIGH,CRITICAL'
+      trivy_comment_mode:
+        description: '"full" = comment all current HIGH/CRITICAL; "diff" = comment only newly introduced ones'
+        required: false
+        type: string
+        default: 'full'
     secrets:
       OSSRH_USER:
         required: false
@@ -52,7 +57,7 @@ jobs:
       has_android: ${{ steps.detect.outputs.has_android }}
       has_flutter: ${{ steps.detect.outputs.has_flutter }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Detect stacks
         id: detect
@@ -86,7 +91,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
@@ -105,7 +110,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
         with:
@@ -122,7 +127,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install actionlint
         run: |
@@ -140,29 +145,137 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      pull-requests: write
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - name: Scan filesystem for vulnerabilities
+      # ── Step A: Table scan for comment (never fails the job) ──────────────
+      - name: Trivy scan (table report for comment)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           severity: ${{ inputs.SCAN_SEVERITY }}
-          exit-code: 1
+          exit-code: '0'
+          format: table
+          output: trivy-report.txt
+
+      # ── Step B (diff mode): Checkout base ref for comparison ──────────────
+      - name: Checkout base ref for diff comparison
+        if: inputs.trivy_comment_mode == 'diff' && github.event_name == 'pull_request'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trivy-base
+
+      - name: Trivy scan base ref (JSON for diff)
+        if: inputs.trivy_comment_mode == 'diff' && github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: trivy-base
+          severity: ${{ inputs.SCAN_SEVERITY }}
+          exit-code: '0'
+          format: json
+          output: trivy-base.json
+
+      - name: Trivy scan head ref (JSON for diff)
+        if: inputs.trivy_comment_mode == 'diff' && github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: ${{ inputs.SCAN_SEVERITY }}
+          exit-code: '0'
+          format: json
+          output: trivy-head.json
+
+      # ── Step C: Build Markdown comment body ──────────────────────────────
+      - name: Build Trivy comment body
+        run: |
+          COMMENT_FILE="trivy-comment.md"
+          MODE="${{ inputs.trivy_comment_mode }}"
+
+          if [ "$MODE" = "diff" ] && [ -f "trivy-base.json" ] && [ -f "trivy-head.json" ]; then
+            base_ids=$(jq -r '.Results[]?.Vulnerabilities[]? | .PkgName + ":::" + .VulnerabilityID' trivy-base.json 2>/dev/null | sort -u || true)
+            new_rows=""
+            while IFS=$'\t' read -r pkg vuln_id severity title; do
+              if ! printf '%s\n' "$base_ids" | grep -qF "${pkg}:::${vuln_id}"; then
+                new_rows="${new_rows}| ${pkg} | ${vuln_id} | ${severity} | ${title} |\n"
+              fi
+            done < <(jq -r '.Results[]?.Vulnerabilities[]? | [.PkgName, .VulnerabilityID, .Severity, (.Title // "N/A")] | @tsv' trivy-head.json 2>/dev/null || true)
+
+            if [ -n "$new_rows" ]; then
+              {
+                echo "## Trivy — New HIGH/CRITICAL Findings"
+                echo ""
+                echo "These vulnerabilities were **introduced by this PR**:"
+                echo ""
+                echo "| Package | CVE | Severity | Title |"
+                echo "|---|---|---|---|"
+                printf '%b' "$new_rows"
+              } > "$COMMENT_FILE"
+            else
+              {
+                echo "## Trivy Security Scan"
+                echo "✅ No NEW HIGH/CRITICAL vulnerabilities introduced by this PR."
+              } > "$COMMENT_FILE"
+            fi
+          else
+            if grep -qE "^Total: [1-9]" trivy-report.txt 2>/dev/null; then
+              {
+                echo "## Trivy Security Scan Findings"
+                echo ""
+                echo '```'
+                cat trivy-report.txt
+                echo '```'
+              } > "$COMMENT_FILE"
+            else
+              {
+                echo "## Trivy Security Scan"
+                echo "✅ No HIGH/CRITICAL findings."
+              } > "$COMMENT_FILE"
+            fi
+          fi
+
+      # ── Step D: Post sticky PR comment (skip on forks — token is read-only) ─
+      - name: Post Trivy findings comment
+        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
+        with:
+          header: trivy
+          path: trivy-comment.md
+
+      # ── SARIF upload for Security tab (always, independent of gate) ───────
+      - name: Trivy SARIF scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: ${{ inputs.SCAN_SEVERITY }}
+          exit-code: '0'
           format: sarif
           output: trivy-fs.sarif
 
-      - name: Upload results to Security tab
+      - name: Upload SARIF to Security tab
         uses: github/codeql-action/upload-sarif@4e828ff8d448a8a6e532957b1811f387a63867e8  # v3.29.4
         if: always()
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
+
+      # ── Step E: Gate — fail the job if HIGH/CRITICAL exist ────────────────
+      - name: Gate on HIGH/CRITICAL findings
+        run: |
+          if grep -qE "^Total: [1-9]" trivy-report.txt 2>/dev/null; then
+            echo "::error::HIGH or CRITICAL vulnerabilities found. Review the Trivy comment on this PR."
+            exit 1
+          fi
+          echo "No HIGH or CRITICAL findings."
 
   trivy-config:
     name: Trivy Dockerfile / IaC Scan
@@ -175,7 +288,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Scan Dockerfiles and IaC configs
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
@@ -209,7 +322,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
         with:
@@ -217,7 +330,7 @@ jobs:
           java-version: ${{ inputs.JAVA_VERSION }}
 
       - name: Cache Maven repository
-        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a  # v4.1.2
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
@@ -262,7 +375,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
         with:
@@ -293,13 +406,13 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: ${{ inputs.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: ${{ inputs.NPM_SERVICE_LOCATION }}/package-lock.json
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
         run: |
@@ -330,7 +443,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
         with:
