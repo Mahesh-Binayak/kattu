@@ -40,6 +40,8 @@ on:
         required: false
       CODECOV_TOKEN:
         required: false
+      GITLEAKS_LICENSE:
+        required: false
 
 jobs:
 # ─────────────────────────────────────────────
@@ -66,9 +68,15 @@ jobs:
         run: |
           detect() { [ -n "$1" ] && echo "true" || echo "false"; }
 
-          echo "has_java=$(detect "$(find . -maxdepth 5 -name 'pom.xml' -not -path '*/node_modules/*' | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_java=$(detect "$(find . -maxdepth 5 -name 'pom.xml' \
+              -not -path '*/node_modules/*' \
+              -not -path '*/api-test/*' -not -path '*/ui-test/*' -not -path '*/uitest*/*' \
+              | head -1)")" >> $GITHUB_OUTPUT
           echo "has_go=$(detect "$(find . -maxdepth 5 -name 'go.mod' -not -path '*/vendor/*' | head -1)")" >> $GITHUB_OUTPUT
-          echo "has_npm=$(detect "$(find . -maxdepth 5 -name 'package.json' -not -path '*/node_modules/*' | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_npm=$(detect "$(find . -maxdepth 5 -name 'package.json' \
+              -not -path '*/node_modules/*' \
+              -not -path '*/api-test/*' -not -path '*/ui-test/*' -not -path '*/uitest*/*' \
+              | head -1)")" >> $GITHUB_OUTPUT
           echo "has_android=$(detect "$(grep -rl 'com.android' --include='*.gradle' --include='*.gradle.kts' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
           echo "has_flutter=$(detect "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
 
@@ -99,7 +107,8 @@ jobs:
 
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   dependency-review:
     name: Dependency CVE Review
