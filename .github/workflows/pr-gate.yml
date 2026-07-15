@@ -33,29 +33,6 @@ on:
         required: false
         type: string
         default: 'full'
-      # Stack flags — set to true for each language/platform present in the repo.
-      # Auto-detection via find/grep is unreliable across mono-repos and test-rig layouts,
-      # so the caller declares what stacks exist explicitly.
-      HAS_JAVA:
-        required: false
-        type: boolean
-        default: false
-      HAS_GO:
-        required: false
-        type: boolean
-        default: false
-      HAS_NPM:
-        required: false
-        type: boolean
-        default: false
-      HAS_ANDROID:
-        required: false
-        type: boolean
-        default: false
-      HAS_FLUTTER:
-        required: false
-        type: boolean
-        default: false
     secrets:
       OSSRH_USER:
         required: false
@@ -67,6 +44,49 @@ on:
         required: false
 
 jobs:
+# ─────────────────────────────────────────────
+# DETECT — Check for stack marker files at the
+# declared service locations (not a repo-wide
+# search). Security jobs run in parallel with
+# this; coverage jobs wait for its output.
+# ─────────────────────────────────────────────
+  detect:
+    name: Detect Stacks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_java:    ${{ steps.detect.outputs.has_java }}
+      has_go:      ${{ steps.detect.outputs.has_go }}
+      has_npm:     ${{ steps.detect.outputs.has_npm }}
+      has_android: ${{ steps.detect.outputs.has_android }}
+      has_flutter: ${{ steps.detect.outputs.has_flutter }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Detect stacks
+        id: detect
+        run: |
+          # Java/Go/npm: check the marker file at the declared service location only.
+          # Callers pass JAVA_SERVICE_LOCATION=./backend (etc.) so detection is precise.
+          fexists() { [ -f "$1" ] && echo "true" || echo "false"; }
+          # Android/Flutter: no dedicated location input — shallow grep from repo root.
+          ffind()   { [ -n "$1" ] && echo "true" || echo "false"; }
+
+          echo "has_java=$(fexists "${{ inputs.JAVA_SERVICE_LOCATION }}/pom.xml")"    >> $GITHUB_OUTPUT
+          echo "has_go=$(fexists "${{ inputs.GO_SERVICE_LOCATION }}/go.mod")"          >> $GITHUB_OUTPUT
+          echo "has_npm=$(fexists "${{ inputs.NPM_SERVICE_LOCATION }}/package.json")"  >> $GITHUB_OUTPUT
+          echo "has_android=$(ffind "$(grep -rl 'com.android' --include='*.gradle' --include='*.gradle.kts' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_flutter=$(ffind "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")"                     >> $GITHUB_OUTPUT
+
+      - name: Print detected stacks
+        run: |
+          echo "Java:    ${{ steps.detect.outputs.has_java }}"
+          echo "Go:      ${{ steps.detect.outputs.has_go }}"
+          echo "npm:     ${{ steps.detect.outputs.has_npm }}"
+          echo "Android: ${{ steps.detect.outputs.has_android }}"
+          echo "Flutter: ${{ steps.detect.outputs.has_flutter }}"
+
 # ─────────────────────────────────────────────
 # TIER 1 — Security (always run, all parallel)
 # ─────────────────────────────────────────────
@@ -301,11 +321,12 @@ jobs:
           category: trivy-config
 
 # ─────────────────────────────────────────────
-# TIER 2 — Coverage (opt-in via HAS_* inputs, all parallel)
+# TIER 2 — Coverage (conditional on detect output, all parallel)
 # ─────────────────────────────────────────────
   coverage-java:
     name: Java Coverage → Codecov
-    if: inputs.HAS_JAVA
+    needs: detect
+    if: ${{ needs.detect.outputs.has_java == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -358,7 +379,8 @@ jobs:
 
   coverage-go:
     name: Go Coverage → Codecov
-    if: inputs.HAS_GO
+    needs: detect
+    if: ${{ needs.detect.outputs.has_go == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -389,7 +411,8 @@ jobs:
 
   coverage-npm:
     name: npm Coverage → Codecov
-    if: inputs.HAS_NPM
+    needs: detect
+    if: ${{ needs.detect.outputs.has_npm == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -426,7 +449,8 @@ jobs:
 
   coverage-android:
     name: Android Coverage → Codecov
-    if: inputs.HAS_ANDROID
+    needs: detect
+    if: ${{ needs.detect.outputs.has_android == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
