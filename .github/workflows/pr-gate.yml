@@ -33,6 +33,29 @@ on:
         required: false
         type: string
         default: 'full'
+      # Stack flags — set to true for each language/platform present in the repo.
+      # Auto-detection via find/grep is unreliable across mono-repos and test-rig layouts,
+      # so the caller declares what stacks exist explicitly.
+      HAS_JAVA:
+        required: false
+        type: boolean
+        default: false
+      HAS_GO:
+        required: false
+        type: boolean
+        default: false
+      HAS_NPM:
+        required: false
+        type: boolean
+        default: false
+      HAS_ANDROID:
+        required: false
+        type: boolean
+        default: false
+      HAS_FLUTTER:
+        required: false
+        type: boolean
+        default: false
     secrets:
       OSSRH_USER:
         required: false
@@ -45,51 +68,7 @@ on:
 
 jobs:
 # ─────────────────────────────────────────────
-# DETECT — Auto-detect which stacks are present
-# Security jobs run in parallel with this.
-# Coverage jobs wait for its output.
-# ─────────────────────────────────────────────
-  detect:
-    name: Detect Stacks
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      has_java:    ${{ steps.detect.outputs.has_java }}
-      has_go:      ${{ steps.detect.outputs.has_go }}
-      has_npm:     ${{ steps.detect.outputs.has_npm }}
-      has_android: ${{ steps.detect.outputs.has_android }}
-      has_flutter: ${{ steps.detect.outputs.has_flutter }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-
-      - name: Detect stacks
-        id: detect
-        run: |
-          detect() { [ -n "$1" ] && echo "true" || echo "false"; }
-
-          echo "has_java=$(detect "$(find . -maxdepth 5 -name 'pom.xml' \
-              -not -path '*/node_modules/*' \
-              -not -path '*/api-test/*' -not -path '*/ui-test/*' -not -path '*/uitest*/*' \
-              | head -1)")" >> $GITHUB_OUTPUT
-          echo "has_go=$(detect "$(find . -maxdepth 5 -name 'go.mod' -not -path '*/vendor/*' | head -1)")" >> $GITHUB_OUTPUT
-          echo "has_npm=$(detect "$(find . -maxdepth 5 -name 'package.json' \
-              -not -path '*/node_modules/*' \
-              -not -path '*/api-test/*' -not -path '*/ui-test/*' -not -path '*/uitest*/*' \
-              | head -1)")" >> $GITHUB_OUTPUT
-          echo "has_android=$(detect "$(grep -rl 'com.android' --include='*.gradle' --include='*.gradle.kts' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
-          echo "has_flutter=$(detect "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
-
-      - name: Print detected stacks
-        run: |
-          echo "Java:    ${{ steps.detect.outputs.has_java }}"
-          echo "Go:      ${{ steps.detect.outputs.has_go }}"
-          echo "npm:     ${{ steps.detect.outputs.has_npm }}"
-          echo "Android: ${{ steps.detect.outputs.has_android }}"
-          echo "Flutter: ${{ steps.detect.outputs.has_flutter }}"
-
-# ─────────────────────────────────────────────
-# TIER 1 — Security (always run, all parallel, no stack assumptions)
+# TIER 1 — Security (always run, all parallel)
 # ─────────────────────────────────────────────
   secret-scan:
     name: Secret Scan
@@ -322,12 +301,11 @@ jobs:
           category: trivy-config
 
 # ─────────────────────────────────────────────
-# TIER 2 — Coverage (conditional on detected stack, all parallel with each other)
+# TIER 2 — Coverage (opt-in via HAS_* inputs, all parallel)
 # ─────────────────────────────────────────────
   coverage-java:
     name: Java Coverage → Codecov
-    needs: detect
-    if: ${{ needs.detect.outputs.has_java == 'true' }}
+    if: inputs.HAS_JAVA
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -380,8 +358,7 @@ jobs:
 
   coverage-go:
     name: Go Coverage → Codecov
-    needs: detect
-    if: ${{ needs.detect.outputs.has_go == 'true' }}
+    if: inputs.HAS_GO
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -412,8 +389,7 @@ jobs:
 
   coverage-npm:
     name: npm Coverage → Codecov
-    needs: detect
-    if: ${{ needs.detect.outputs.has_npm == 'true' }}
+    if: inputs.HAS_NPM
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -450,8 +426,7 @@ jobs:
 
   coverage-android:
     name: Android Coverage → Codecov
-    needs: detect
-    if: ${{ needs.detect.outputs.has_android == 'true' && needs.detect.outputs.has_java == 'false' }}
+    if: inputs.HAS_ANDROID
     runs-on: ubuntu-latest
     permissions:
       contents: read
