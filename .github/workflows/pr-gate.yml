@@ -16,6 +16,10 @@ on:
         required: false
         type: string
         default: '.'
+      ANDROID_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: '.'
       JAVA_VERSION:
         required: false
         type: number
@@ -76,8 +80,13 @@ jobs:
           echo "has_java=$(fexists "${{ inputs.JAVA_SERVICE_LOCATION }}/pom.xml")"    >> $GITHUB_OUTPUT
           echo "has_go=$(fexists "${{ inputs.GO_SERVICE_LOCATION }}/go.mod")"          >> $GITHUB_OUTPUT
           echo "has_npm=$(fexists "${{ inputs.NPM_SERVICE_LOCATION }}/package.json")"  >> $GITHUB_OUTPUT
-          echo "has_android=$(ffind "$(grep -rl 'com.android' --include='*.gradle' --include='*.gradle.kts' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
-          echo "has_flutter=$(ffind "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")"                     >> $GITHUB_OUTPUT
+          # Android: check for settings.gradle{,.kts} at the declared location
+          if [ -f "${{ inputs.ANDROID_SERVICE_LOCATION }}/settings.gradle" ] || [ -f "${{ inputs.ANDROID_SERVICE_LOCATION }}/settings.gradle.kts" ]; then
+            echo "has_android=true"  >> $GITHUB_OUTPUT
+          else
+            echo "has_android=false" >> $GITHUB_OUTPUT
+          fi
+          echo "has_flutter=$(ffind "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
 
       - name: Print detected stacks
         run: |
@@ -467,12 +476,14 @@ jobs:
           java-version: ${{ inputs.JAVA_VERSION }}
 
       - name: Run Android unit tests with coverage
-        run: ./gradlew testDebugUnitTest jacocoTestReport
+        run: |
+          cd ${{ inputs.ANDROID_SERVICE_LOCATION }}
+          ./gradlew testDebugUnitTest jacocoTestReport
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '**/build/reports/jacoco/**/*.xml'
+          files: '${{ inputs.ANDROID_SERVICE_LOCATION }}/**/build/reports/jacoco/**/*.xml'
           flags: android
           fail_ci_if_error: true
