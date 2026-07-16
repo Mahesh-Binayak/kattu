@@ -3,23 +3,11 @@ name: PR Gate
 on:
   workflow_call:
     inputs:
-      # Override service root paths only if they are NOT at repo root
-      JAVA_SERVICE_LOCATION:
+      SERVICE_LOCATION:
         required: false
         type: string
         default: '.'
-      GO_SERVICE_LOCATION:
-        required: false
-        type: string
-        default: '.'
-      NPM_SERVICE_LOCATION:
-        required: false
-        type: string
-        default: '.'
-      ANDROID_SERVICE_LOCATION:
-        required: false
-        type: string
-        default: '.'
+        description: 'Root path of the service relative to repo root (default: repo root)'
       JAVA_VERSION:
         required: false
         type: number
@@ -71,17 +59,15 @@ jobs:
       - name: Detect stacks
         id: detect
         run: |
-          # Java/Go/npm: check the marker file at the declared service location only.
-          # Callers pass JAVA_SERVICE_LOCATION=./backend (etc.) so detection is precise.
+          # Check marker files at the declared SERVICE_LOCATION (default: repo root).
           fexists() { [ -f "$1" ] && echo "true" || echo "false"; }
-          # Android/Flutter: no dedicated location input — shallow grep from repo root.
           ffind()   { [ -n "$1" ] && echo "true" || echo "false"; }
+          LOC="${{ inputs.SERVICE_LOCATION }}"
 
-          echo "has_java=$(fexists "${{ inputs.JAVA_SERVICE_LOCATION }}/pom.xml")"    >> $GITHUB_OUTPUT
-          echo "has_go=$(fexists "${{ inputs.GO_SERVICE_LOCATION }}/go.mod")"          >> $GITHUB_OUTPUT
-          echo "has_npm=$(fexists "${{ inputs.NPM_SERVICE_LOCATION }}/package.json")"  >> $GITHUB_OUTPUT
-          # Android: check for settings.gradle{,.kts} at the declared location
-          if [ -f "${{ inputs.ANDROID_SERVICE_LOCATION }}/settings.gradle" ] || [ -f "${{ inputs.ANDROID_SERVICE_LOCATION }}/settings.gradle.kts" ]; then
+          echo "has_java=$(fexists "$LOC/pom.xml")"    >> $GITHUB_OUTPUT
+          echo "has_go=$(fexists "$LOC/go.mod")"        >> $GITHUB_OUTPUT
+          echo "has_npm=$(fexists "$LOC/package.json")" >> $GITHUB_OUTPUT
+          if [ -f "$LOC/settings.gradle" ] || [ -f "$LOC/settings.gradle.kts" ]; then
             echo "has_android=true"  >> $GITHUB_OUTPUT
           else
             echo "has_android=false" >> $GITHUB_OUTPUT
@@ -374,7 +360,7 @@ jobs:
 
       - name: Run tests and generate coverage
         run: |
-          cd ${{ inputs.JAVA_SERVICE_LOCATION }}
+          cd ${{ inputs.SERVICE_LOCATION }}
           mvn -U -B verify -Dgpg.skip=true -Dmaven.wagon.http.retryHandler.count=2 \
             --file pom.xml -s $GITHUB_WORKSPACE/settings.xml
 
@@ -402,19 +388,19 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
         with:
-          go-version-file: ${{ inputs.GO_SERVICE_LOCATION }}/go.mod
+          go-version-file: ${{ inputs.SERVICE_LOCATION }}/go.mod
           cache: true
 
       - name: Run tests and generate coverage
         run: |
-          cd ${{ inputs.GO_SERVICE_LOCATION }}
+          cd ${{ inputs.SERVICE_LOCATION }}
           go test -v -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ${{ inputs.GO_SERVICE_LOCATION }}/coverage.out
+          files: ${{ inputs.SERVICE_LOCATION }}/coverage.out
           flags: go
           fail_ci_if_error: true
 
@@ -440,19 +426,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd ${{ inputs.NPM_SERVICE_LOCATION }}
+          cd ${{ inputs.SERVICE_LOCATION }}
           npm ci
 
       - name: Run tests and generate coverage
         run: |
-          cd ${{ inputs.NPM_SERVICE_LOCATION }}
+          cd ${{ inputs.SERVICE_LOCATION }}
           npm test -- --coverage --watchAll=false
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ${{ inputs.NPM_SERVICE_LOCATION }}/coverage/lcov.info
+          files: ${{ inputs.SERVICE_LOCATION }}/coverage/lcov.info
           flags: npm
           fail_ci_if_error: true
 
@@ -477,13 +463,13 @@ jobs:
 
       - name: Run Android unit tests with coverage
         run: |
-          cd ${{ inputs.ANDROID_SERVICE_LOCATION }}
+          cd ${{ inputs.SERVICE_LOCATION }}
           ./gradlew testDebugUnitTest jacocoTestReport
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '${{ inputs.ANDROID_SERVICE_LOCATION }}/**/build/reports/jacoco/**/*.xml'
+          files: '${{ inputs.SERVICE_LOCATION }}/**/build/reports/jacoco/**/*.xml'
           flags: android
           fail_ci_if_error: true
