@@ -7,7 +7,32 @@ on:
         required: false
         type: string
         default: '.'
-        description: 'Root path of the service relative to repo root (default: repo root)'
+        description: 'Base path used by all stacks unless a type-specific override is set'
+      JAVA_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: ''
+        description: 'Java service root; falls back to SERVICE_LOCATION if empty'
+      GO_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: ''
+        description: 'Go service root; falls back to SERVICE_LOCATION if empty'
+      NPM_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: ''
+        description: 'npm service root; falls back to SERVICE_LOCATION if empty'
+      ANDROID_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: ''
+        description: 'Android project root; falls back to SERVICE_LOCATION if empty'
+      FLUTTER_SERVICE_LOCATION:
+        required: false
+        type: string
+        default: ''
+        description: 'Flutter project root; falls back to SERVICE_LOCATION if empty'
       JAVA_VERSION:
         required: false
         type: number
@@ -48,39 +73,58 @@ jobs:
     permissions:
       contents: read
     outputs:
-      has_java:    ${{ steps.detect.outputs.has_java }}
-      has_go:      ${{ steps.detect.outputs.has_go }}
-      has_npm:     ${{ steps.detect.outputs.has_npm }}
-      has_android: ${{ steps.detect.outputs.has_android }}
-      has_flutter: ${{ steps.detect.outputs.has_flutter }}
+      has_java:         ${{ steps.detect.outputs.has_java }}
+      has_go:           ${{ steps.detect.outputs.has_go }}
+      has_npm:          ${{ steps.detect.outputs.has_npm }}
+      has_android:      ${{ steps.detect.outputs.has_android }}
+      has_flutter:      ${{ steps.detect.outputs.has_flutter }}
+      java_location:    ${{ steps.detect.outputs.java_location }}
+      go_location:      ${{ steps.detect.outputs.go_location }}
+      npm_location:     ${{ steps.detect.outputs.npm_location }}
+      android_location: ${{ steps.detect.outputs.android_location }}
+      flutter_location: ${{ steps.detect.outputs.flutter_location }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Detect stacks
         id: detect
         run: |
-          # Check marker files at the declared SERVICE_LOCATION (default: repo root).
+          # Resolve each stack location: use the type-specific input when set,
+          # otherwise fall back to SERVICE_LOCATION. Single-stack callers only
+          # need SERVICE_LOCATION; multi-stack callers set per-type overrides.
           fexists() { [ -f "$1" ] && echo "true" || echo "false"; }
-          ffind()   { [ -n "$1" ] && echo "true" || echo "false"; }
-          LOC="${{ inputs.SERVICE_LOCATION }}"
+          BASE="${{ inputs.SERVICE_LOCATION }}"
+          resolve() { local v="$1"; [ -n "$v" ] && echo "$v" || echo "$BASE"; }
 
-          echo "has_java=$(fexists "$LOC/pom.xml")"    >> $GITHUB_OUTPUT
-          echo "has_go=$(fexists "$LOC/go.mod")"        >> $GITHUB_OUTPUT
-          echo "has_npm=$(fexists "$LOC/package.json")" >> $GITHUB_OUTPUT
-          if [ -f "$LOC/settings.gradle" ] || [ -f "$LOC/settings.gradle.kts" ]; then
+          JAVA_LOC="$(resolve "${{ inputs.JAVA_SERVICE_LOCATION }}")"
+          GO_LOC="$(resolve "${{ inputs.GO_SERVICE_LOCATION }}")"
+          NPM_LOC="$(resolve "${{ inputs.NPM_SERVICE_LOCATION }}")"
+          ANDROID_LOC="$(resolve "${{ inputs.ANDROID_SERVICE_LOCATION }}")"
+          FLUTTER_LOC="$(resolve "${{ inputs.FLUTTER_SERVICE_LOCATION }}")"
+
+          echo "has_java=$(fexists "$JAVA_LOC/pom.xml")"       >> $GITHUB_OUTPUT
+          echo "has_go=$(fexists "$GO_LOC/go.mod")"             >> $GITHUB_OUTPUT
+          echo "has_npm=$(fexists "$NPM_LOC/package.json")"     >> $GITHUB_OUTPUT
+          if [ -f "$ANDROID_LOC/settings.gradle" ] || [ -f "$ANDROID_LOC/settings.gradle.kts" ]; then
             echo "has_android=true"  >> $GITHUB_OUTPUT
           else
             echo "has_android=false" >> $GITHUB_OUTPUT
           fi
-          echo "has_flutter=$(ffind "$(grep -rl 'sdk: flutter' --include='pubspec.yaml' . 2>/dev/null | head -1)")" >> $GITHUB_OUTPUT
+          echo "has_flutter=$(fexists "$FLUTTER_LOC/pubspec.yaml")" >> $GITHUB_OUTPUT
+
+          echo "java_location=$JAVA_LOC"       >> $GITHUB_OUTPUT
+          echo "go_location=$GO_LOC"           >> $GITHUB_OUTPUT
+          echo "npm_location=$NPM_LOC"         >> $GITHUB_OUTPUT
+          echo "android_location=$ANDROID_LOC" >> $GITHUB_OUTPUT
+          echo "flutter_location=$FLUTTER_LOC" >> $GITHUB_OUTPUT
 
       - name: Print detected stacks
         run: |
-          echo "Java:    ${{ steps.detect.outputs.has_java }}"
-          echo "Go:      ${{ steps.detect.outputs.has_go }}"
-          echo "npm:     ${{ steps.detect.outputs.has_npm }}"
-          echo "Android: ${{ steps.detect.outputs.has_android }}"
-          echo "Flutter: ${{ steps.detect.outputs.has_flutter }}"
+          echo "Java:    ${{ steps.detect.outputs.has_java }}  (${{ steps.detect.outputs.java_location }})"
+          echo "Go:      ${{ steps.detect.outputs.has_go }}  (${{ steps.detect.outputs.go_location }})"
+          echo "npm:     ${{ steps.detect.outputs.has_npm }}  (${{ steps.detect.outputs.npm_location }})"
+          echo "Android: ${{ steps.detect.outputs.has_android }}  (${{ steps.detect.outputs.android_location }})"
+          echo "Flutter: ${{ steps.detect.outputs.has_flutter }}  (${{ steps.detect.outputs.flutter_location }})"
 
 # ─────────────────────────────────────────────
 # TIER 1 — Security (always run, all parallel)
@@ -360,7 +404,7 @@ jobs:
 
       - name: Run tests and generate coverage
         run: |
-          cd ${{ inputs.SERVICE_LOCATION }}
+          cd ${{ needs.detect.outputs.java_location }}
           mvn -U -B verify -Dgpg.skip=true -Dmaven.wagon.http.retryHandler.count=2 \
             --file pom.xml -s $GITHUB_WORKSPACE/settings.xml
 
@@ -368,7 +412,7 @@ jobs:
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '**/target/site/jacoco/jacoco.xml'
+          files: '${{ needs.detect.outputs.java_location }}/**/target/site/jacoco/jacoco.xml'
           flags: java
           fail_ci_if_error: true
 
@@ -388,19 +432,19 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
         with:
-          go-version-file: ${{ inputs.SERVICE_LOCATION }}/go.mod
+          go-version-file: ${{ needs.detect.outputs.go_location }}/go.mod
           cache: true
 
       - name: Run tests and generate coverage
         run: |
-          cd ${{ inputs.SERVICE_LOCATION }}
+          cd ${{ needs.detect.outputs.go_location }}
           go test -v -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ${{ inputs.SERVICE_LOCATION }}/coverage.out
+          files: ${{ needs.detect.outputs.go_location }}/coverage.out
           flags: go
           fail_ci_if_error: true
 
@@ -422,23 +466,23 @@ jobs:
         with:
           node-version: ${{ inputs.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: '**/package-lock.json'
+          cache-dependency-path: '${{ needs.detect.outputs.npm_location }}/package-lock.json'
 
       - name: Install dependencies
         run: |
-          cd ${{ inputs.SERVICE_LOCATION }}
+          cd ${{ needs.detect.outputs.npm_location }}
           npm ci
 
       - name: Run tests and generate coverage
         run: |
-          cd ${{ inputs.SERVICE_LOCATION }}
+          cd ${{ needs.detect.outputs.npm_location }}
           npm test -- --coverage --watchAll=false
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ${{ inputs.SERVICE_LOCATION }}/coverage/lcov.info
+          files: '${{ needs.detect.outputs.npm_location }}/coverage/lcov.info'
           flags: npm
           fail_ci_if_error: true
 
@@ -463,13 +507,13 @@ jobs:
 
       - name: Run Android unit tests with coverage
         run: |
-          cd ${{ inputs.SERVICE_LOCATION }}
+          cd ${{ needs.detect.outputs.android_location }}
           ./gradlew testDebugUnitTest jacocoTestReport
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: '${{ inputs.SERVICE_LOCATION }}/**/build/reports/jacoco/**/*.xml'
+          files: '${{ needs.detect.outputs.android_location }}/**/build/reports/jacoco/**/*.xml'
           flags: android
           fail_ci_if_error: true
