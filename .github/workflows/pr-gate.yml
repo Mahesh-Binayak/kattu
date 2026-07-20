@@ -50,12 +50,17 @@ on:
         required: false
         type: string
         default: 'full'
+      NPM_COVERAGE_COMMAND:
+        description: 'Command to run tests and generate coverage. Override for non-Jest runners (e.g. "npx vitest run --coverage" for Vitest).'
+        required: false
+        type: string
+        default: 'npm test -- --coverage'
     secrets:
       OSSRH_USER:
         required: false
       OSSRH_SECRET:
         required: false
-      CODECOV_TOKEN:
+      CODECOV_LICENSE:
         required: false
       GITLEAKS_LICENSE:
         required: false
@@ -411,7 +416,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_LICENSE }}
           files: '${{ needs.detect.outputs.java_location }}/**/target/site/jacoco/jacoco.xml'
           flags: java
           fail_ci_if_error: true
@@ -443,7 +448,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_LICENSE }}
           files: ${{ needs.detect.outputs.go_location }}/coverage.out
           flags: go
           fail_ci_if_error: true
@@ -476,12 +481,12 @@ jobs:
       - name: Run tests and generate coverage
         run: |
           cd ${{ needs.detect.outputs.npm_location }}
-          npm test -- --coverage --watchAll=false
+          ${{ inputs.NPM_COVERAGE_COMMAND }} --watchAll=false
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_LICENSE }}
           files: '${{ needs.detect.outputs.npm_location }}/coverage/lcov.info'
           flags: npm
           fail_ci_if_error: true
@@ -513,7 +518,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_LICENSE }}
           files: '${{ needs.detect.outputs.android_location }}/**/build/reports/jacoco/**/*.xml'
           flags: android
           fail_ci_if_error: true
