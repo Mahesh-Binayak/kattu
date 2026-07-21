@@ -46,15 +46,12 @@ jobs:
           echo "BRANCH_NAME=$(echo ${{ github.ref }} | sed -e 's,.*/\(.*\),\1,')" >> $GITHUB_ENV
           echo "SONAR URL : ${{ inputs.SONAR_URL }}"
 
-      - name: Setup the Maven settings file (dependency repositories only)
-        run: echo "<settings> <profiles> <profile> <id>allow-snapshots</id> <activation><activeByDefault>true</activeByDefault></activation> <repositories> <repository> <id>snapshots-repo</id> <url>https://oss.sonatype.org/content/repositories/snapshots</url> <releases><enabled>false</enabled></releases> <snapshots><enabled>true</enabled></snapshots> </repository> <repository> <id>danubetech-maven-public</id> <url>https://repo.danubetech.com/repository/maven-public/</url> </repository> </repositories> </profile> <profile> <id>sonar</id> <properties> <sonar.sources>.</sonar.sources> <sonar.host.url>https://sonarcloud.io</sonar.host.url> </properties> <activation> <activeByDefault>false</activeByDefault> </activation> </profile> </profiles> </settings>" > $GITHUB_WORKSPACE/settings.xml
-
       #- name: Build with Maven
       #  run: cd ${{ inputs.SERVICE_LOCATION }} && mvn -B  package --file pom.xml -s $GITHUB_WORKSPACE/settings.xml
 
       - name: Analyze with SonarCloud
         run: |
-          cd ${{ inputs.SERVICE_LOCATION }} &&  mvn -U -B verify sonar:sonar -Dgpg.skip=true -Dmaven.wagon.http.retryHandler.count=2 -Dsonar.projectKey=${{ inputs.PROJECT_KEY }} -Dsonar.organization=${{ secrets.ORG_KEY }} -Dsonar.host.url=${{ inputs.SONAR_URL }} -Dsonar.token=${{ secrets.SONAR_TOKEN }} --file pom.xml -s $GITHUB_WORKSPACE/settings.xml
+          cd ${{ inputs.SERVICE_LOCATION }} &&  mvn -U -B verify sonar:sonar -Dgpg.skip=true -Dmaven.wagon.http.retryHandler.count=2 -Dsonar.projectKey=${{ inputs.PROJECT_KEY }} -Dsonar.organization=${{ secrets.ORG_KEY }} -Dsonar.host.url=${{ inputs.SONAR_URL }} -Dsonar.token=${{ secrets.SONAR_TOKEN }} --file pom.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
