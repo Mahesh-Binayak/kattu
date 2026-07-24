@@ -41,6 +41,11 @@ on:
         required: false
         type: string
         default: '20'
+      FLUTTER_VERSION:
+        required: false
+        type: string
+        default: ''
+        description: 'Flutter SDK version; empty = latest of the stable channel'
       SCAN_SEVERITY:
         required: false
         type: string
@@ -522,3 +527,162 @@ jobs:
           files: '${{ needs.detect.outputs.android_location }}/**/build/reports/jacoco/**/*.xml'
           flags: android
           fail_ci_if_error: true
+
+  coverage-flutter:
+    name: Flutter Coverage → Codecov
+    needs: detect
+    if: ${{ needs.detect.outputs.has_flutter == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ inputs.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          cd ${{ needs.detect.outputs.flutter_location }}
+          flutter pub get
+
+      - name: Run tests and generate coverage
+        run: |
+          cd ${{ needs.detect.outputs.flutter_location }}
+          flutter test --coverage
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_LICENSE }}
+          files: '${{ needs.detect.outputs.flutter_location }}/coverage/lcov.info'
+          flags: flutter
+          fail_ci_if_error: true
+
+# ─────────────────────────────────────────────
+# TIER 2 — Supply-chain integrity (POM-gated)
+# Verify PGP signatures of Maven dependencies via
+# simplify4u/pgpverify-maven-plugin. Advisory only:
+# never fails the PR, but posts a sticky comment
+# flagging unsigned / invalid / untrusted deps.
+# ─────────────────────────────────────────────
+  verify-maven-signatures:
+    name: Maven Dependency Signature Check (pgpverify)
+    needs: detect
+    if: ${{ needs.detect.outputs.has_java == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287  # v5.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.JAVA_VERSION }}
+
+      - name: Cache Maven repository
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-pgpverify-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Create Maven settings
+        run: |
+          cat > $GITHUB_WORKSPACE/settings.xml <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>ossrh</id>
+                <username>${{ secrets.OSSRH_USER }}</username>
+                <password>${{ secrets.OSSRH_SECRET }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      # pgpverify:check verifies PGP signatures of all resolved dependencies.
+      # Plugin version is pinned (supply-chain: never LATEST/RELEASE). The result
+      # is captured but never propagated — this gate is advisory, so we force the
+      # step green and let the comment step surface any problems.
+      - name: Run pgpverify (non-blocking)
+        id: pgpverify
+        run: |
+          cd "${{ needs.detect.outputs.java_location }}"
+          set +e
+          mvn -B -U \
+            org.simplify4u.plugins:pgpverify-maven-plugin:1.19.1:check \
+            --file pom.xml -s "$GITHUB_WORKSPACE/settings.xml" \
+            2>&1 | tee "$GITHUB_WORKSPACE/pgpverify.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "pgpverify finished with exit code $code (non-blocking)."
+
+      - name: Build pgpverify comment body
+        run: |
+          LOG="$GITHUB_WORKSPACE/pgpverify.log"
+          OUT="$GITHUB_WORKSPACE/pgpverify-comment.md"
+          CODE="${{ steps.pgpverify.outputs.exit_code }}"
+
+          # Strip ANSI, then keep the signature-relevant WARN/ERROR lines the
+          # plugin emits (unsigned / invalid / untrusted / missing-key entries).
+          problems="$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" 2>/dev/null \
+            | grep -Ei 'pgp|signature|no key|not found|invalid|untrusted|not trusted|unsigned' \
+            | grep -Ei 'warn|error|invalid|no signature|not found|untrusted|not trusted|unsigned|no key' \
+            | head -100 || true)"
+
+          if [ "$CODE" = "0" ]; then
+            {
+              echo "## 🔐 pgpverify — Maven Dependency Signature Check"
+              echo ""
+              echo "✅ All resolved dependency & plugin PGP signatures verified."
+            } > "$OUT"
+          else
+            {
+              echo "## 🔐 pgpverify — Maven Dependency Signature Check"
+              echo ""
+              echo "> ⚠️ **Warning — signature problems found (exit code \`$CODE\`).**"
+              echo "> This check is **non-blocking**: it will **not** fail the PR, but the items below are supply-chain risks worth reviewing."
+              echo ""
+              if [ -n "$problems" ]; then
+                echo "### 🚩 Warning signs"
+                echo ""
+                echo '```'
+                printf '%s\n' "$problems"
+                echo '```'
+              else
+                echo "_pgpverify reported a failure but no signature-specific lines were parsed — see the full log below._"
+              fi
+              echo ""
+              echo "<details><summary>📋 Full pgpverify log (tail)</summary>"
+              echo ""
+              echo '```'
+              sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tail -300
+              echo '```'
+              echo ""
+              echo "</details>"
+            } > "$OUT"
+          fi
+
+      # Sticky comment on same-repo PRs only (a read-only token can't comment from
+      # a cross-fork PR) — same guard as the Trivy filesystem job.
+      - name: Post pgpverify findings comment
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
+        with:
+          header: pgpverify
+          path: pgpverify-comment.md
